@@ -26,8 +26,18 @@ def make_anchors(feats, strides, grid_cell_offset=0.5):
         anchor_points.append(torch.stack((sx, sy), -1).view(-1, 2))
         stride_tensor.append(torch.full((h * w, 1), stride, dtype=dtype, device=device))
     return torch.cat(anchor_points), torch.cat(stride_tensor)
-
-def dist2bbox(distance, anchor_points,mim, res, xywh=True, dim=-1):
+def dist2bbox(distance, anchor_points, xywh=True, dim=-1):
+    """Transform distance(ltrb) to box(xywh or xyxy)."""
+    # 左上右下
+    lt, rb  = torch.split(distance, 2, dim)
+    x1y1    = anchor_points - lt
+    x2y2    = anchor_points + rb
+    if xywh:
+        c_xy    = (x1y1 + x2y2) / 2
+        wh      = x2y2 - x1y1
+        return torch.cat((c_xy, wh), dim)  # xywh bbox
+    return torch.cat((x1y1, x2y2), dim)  # xyxy bbox
+def dist2bbox1(distance, anchor_points,mim, res, xywh=True, dim=-1):
     lt, rb  = torch.split(distance, 2, dim)
     x1y1    = anchor_points - lt
     x2y2    = anchor_points + rb#后面是更改的内容，但建议此函数全部替换，因入参有加
@@ -52,7 +62,7 @@ class DecodeBox():
         # dbox  batch_size, 4, 8400
         # cls   batch_size, 20, 8400
         dbox, cls, origin_cls, anchors, strides,mim,res = inputs[:7]
-        dbox = dist2bbox(dbox,anchors.unsqueeze(0),mim,res, xywh=True,dim=1)*strides
+        dbox = dist2bbox1(dbox,anchors.unsqueeze(0),mim,res, xywh=True,dim=1)*strides
         y       = torch.cat((dbox, cls.sigmoid()), 1).permute(0, 2, 1)
         # 进行归一化，到0~1之间
         y[:, :, :4] = y[:, :, :4] / torch.Tensor([self.input_shape[1], self.input_shape[0], self.input_shape[1], self.input_shape[0]]).to(y.device)

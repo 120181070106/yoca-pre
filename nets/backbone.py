@@ -209,7 +209,7 @@ def tpr(x,热区下界,热区上界,目标尺度,模式=3):#(3,640,640)图热区
     if 模式==4:画板=画板.transpose(1,2)#纵向操作的化转置回来
     return 画板,偏移量,放缩量#△应左移右超量:偏-(放*尺+偏-尺)=(1-放)尺,放时右移右空亦
 def rez(x,s=640): return F.interpolate(x,(640,640)) if x.dim()==4 else F.interpolate(x.unsqueeze(0),(s,s)).squeeze(0)
-def avg(x):#防效数为零时取极值而补乘
+def avg(x):#防效数为零时取极值而补乘，此处有点问题！
     效数=len(torch.nonzero(x[0]))/int(len(torch.nonzero(x[0]))!=0)
     return torch.stack((x[0].sum(),x[1].sum()))/效数,((x[0]+x[1]).sum())/(2*效数)
 def cat(x): return rez(torch.cat((torch.cat((x[0],x[2]),dim=1),torch.cat((x[1],x[3]),dim=1)),dim=2),160)#上两和下两沿1高再沿2宽拼,以重生界核及更清尺度

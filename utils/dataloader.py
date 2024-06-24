@@ -39,22 +39,34 @@ class YoloDataset(Dataset):
         #   训练时进行数据的随机增强
         #   验证时不进行数据的随机增强
         #---------------------------------------------------#
-        if self.mosaic and self.rand() < self.mosaic_prob and self.epoch_now < self.epoch_length * self.special_aug_ratio:
-            lines = sample(self.annotation_lines, 3)
-            lines.append(self.annotation_lines[index])
-            shuffle(lines)
-            image, box  = self.get_random_data_with_Mosaic(lines, self.input_shape)
+#         if self.mosaic and self.rand() < self.mosaic_prob and self.epoch_now < self.epoch_length * self.special_aug_ratio:
+#             lines = sample(self.annotation_lines, 3)
+#             lines.append(self.annotation_lines[index])
+#             shuffle(lines)
+#             image, box  = self.get_random_data_with_Mosaic(lines, self.input_shape)
             
-            if self.mixup and self.rand() < self.mixup_prob:
-                lines           = sample(self.annotation_lines, 1)
-                image_2, box_2  = self.get_random_data(lines[0], self.input_shape, random = self.train)
-                image, box      = self.get_random_data_with_MixUp(image, box, image_2, box_2)
-        else:
-            image, box      = self.get_random_data(self.annotation_lines[index], self.input_shape, random = self.train)
+#             if self.mixup and self.rand() < self.mixup_prob:
+#                 lines           = sample(self.annotation_lines, 1)
+#                 image_2, box_2  = self.get_random_data(lines[0], self.input_shape, random = self.train)
+#                 image, box      = self.get_random_data_with_MixUp(image, box, image_2, box_2)
+#         else:
+        image, box      = self.get_random_data(self.annotation_lines[index], self.input_shape, random = self.train)
 
         image       = np.transpose(preprocess_input(np.array(image, dtype=np.float32)), (2, 0, 1))
         box         = np.array(box, dtype=np.float32)
-        
+        batch_hm = np.zeros((640,640,1),dtype=np.float32)
+        batch_wh = np.zeros((640,640,2),dtype=np.float32)
+        batch_mask = np.zeros((640,640),dtype=np.float32)
+        for i in range(len(box)):#初始化各图，并随即根据框信息填充，这部分连续复制
+            bbox    = box[i].copy()
+            cls_id  = int(box[i, -1])
+            h = bbox[3]-bbox[1];w = bbox[2]-bbox[0]
+            if h > 0 and w > 0: 
+                radius = max(0, int((h+w)/6))
+                ct=np.array([bbox[0]+w/2,bbox[1]+h/2],dtype=np.float32).astype(np.int32)
+                batch_hm[:,:,0] = draw_gaussian(batch_hm[:,:,0], ct, radius)
+                batch_wh[ct[1], ct[0]] = 1. * w, 1. * h
+                batch_mask[ct[1], ct[0]] = 1
         #---------------------------------------------------#
         #   对真实框进行预处理
         #---------------------------------------------------#
@@ -81,7 +93,7 @@ class YoloDataset(Dataset):
             labels_out[:, 1] = box[:, -1]
             labels_out[:, 2:] = box[:, :4]
             
-        return image, labels_out
+        return image, labels_out, batch_hm, batch_wh, batch_mask
 
     def rand(self, a=0, b=1):
         return np.random.rand()*(b-a) + a
@@ -390,17 +402,23 @@ class YoloDataset(Dataset):
     
     
 # DataLoader中collate_fn使用
-def yolo_dataset_collate(batch):
+def yolo_dataset_collate(batch): #添加三图的信息，建议取代原函数
     images  = []
     bboxes  = []
-    for i, (img, box) in enumerate(batch):
+    hms,whs,masks     = [],[],[] 
+    for i, (img, box, hm, wh, mask) in enumerate(batch):
         images.append(img)
+        hms.append(hm)
         box[:, 0] = i
         bboxes.append(box)
-            
+        whs.append(wh)
+        masks.append(mask)
     images  = torch.from_numpy(np.array(images)).type(torch.FloatTensor)
     bboxes  = torch.from_numpy(np.concatenate(bboxes, 0)).type(torch.FloatTensor)
-    return images, bboxes
+    hms  = torch.from_numpy(np.array(hms)).type(torch.FloatTensor)
+    whs  = torch.from_numpy(np.array(whs)).type(torch.FloatTensor)
+    masks  = torch.from_numpy(np.array(masks)).type(torch.FloatTensor)
+    return images, bboxes, hms,whs,masks
 
 # # DataLoader中collate_fn使用
 # def yolo_dataset_collate(batch):
@@ -424,3 +442,21 @@ def yolo_dataset_collate(batch):
 #     images  = torch.from_numpy(np.array(images)).type(torch.FloatTensor)
 #     bboxes  = torch.from_numpy(np.concatenate(bboxes, 0)).type(torch.FloatTensor)
 #     return images, bboxes, labels, masks
+def draw_gaussian(heatmap, center, radius, k=1):#在本py文件末端插入
+    diameter = 2 * radius + 1
+    gaussian = gaussian2D((diameter, diameter), sigma=diameter / 6)
+    x, y = int(center[0]), int(center[1])
+    height, width = heatmap.shape[0:2]
+    left, right = min(x, radius), min(width - x, radius + 1)
+    top, bottom = min(y, radius), min(height - y, radius + 1)
+    masked_heatmap = heatmap[y - top:y + bottom, x - left:x + right]
+    masked_gaussian = gaussian[radius - top:radius + bottom, radius - left:radius + right]
+    if min(masked_gaussian.shape) > 0 and min(masked_heatmap.shape) > 0:  # TODO debug
+        np.maximum(masked_heatmap, masked_gaussian * k, out=masked_heatmap)
+    return heatmap
+def gaussian2D(shape, sigma=1):
+    m, n = [(ss - 1.) / 2. for ss in shape]
+    y, x = np.ogrid[-m:m + 1, -n:n + 1]
+    h = np.exp(-(x * x + y * y) / (2 * sigma * sigma))
+    h[h < np.finfo(h.dtype).eps * h.max()] = 0
+    return h

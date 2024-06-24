@@ -446,7 +446,7 @@ class Loss:
         # bs, max_boxes_num, 5 => bs, max_boxes_num, 1 ; bs, max_boxes_num, 4
         gt_labels, gt_bboxes    = targets.split((1, 4), 2)  # cls, xyxy
         mim=preds[-2].to(gt_bboxes.device);res=preds[-1].to(gt_bboxes.device)
-        print(mim.shape,res.shape)
+        # print(mim.shape,res.shape)
         gt_bboxes = gt_bboxes*res.unsqueeze(1).repeat(1,1,2)+mim.unsqueeze(1).repeat(1,1,2)
         # 求哪些框是有目标的，哪些是填充的
         # bs, max_boxes_num

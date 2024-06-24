@@ -2,12 +2,50 @@ import os
 
 import torch
 from tqdm import tqdm
-
+import torch.nn.functional as F
 from utils.utils import get_lr
-        
+def reg_l1_loss(pred, target, mask): #在首函前添加这两函数
+    pred = pred.permute(0,2,3,1)
+    expand_mask = torch.unsqueeze(mask,-1).repeat(1,1,1,2)
+    loss = F.l1_loss(pred * expand_mask, target * expand_mask, reduction='sum')
+    loss = loss / (mask.sum() + 1e-4)
+    return loss
+def focal_loss(pred, target):
+    pred = pred.permute(0, 2, 3, 1)
+    #-------------------------------------------------------------------------#
+    #   找到每张图片的正样本和负样本
+    #   一个真实框对应一个正样本
+    #   除去正样本的特征点，其余为负样本
+    #-------------------------------------------------------------------------#
+    pos_inds = target.eq(1).float()
+    neg_inds = target.lt(1).float()
+    #-------------------------------------------------------------------------#
+    #   正样本特征点附近的负样本的权值更小一些
+    #-------------------------------------------------------------------------#
+    neg_weights = torch.pow(1 - target, 4)
+    pred = torch.clamp(pred, 1e-6, 1 - 1e-6)
+    #-------------------------------------------------------------------------#
+    #   计算focal loss。难分类样本权重大，易分类样本权重小。
+    #-------------------------------------------------------------------------#
+    pos_loss = torch.log(pred) * torch.pow(1 - pred, 2) * pos_inds
+    neg_loss = torch.log(1 - pred) * torch.pow(pred, 2) * neg_weights * neg_inds
+    #-------------------------------------------------------------------------#
+    #   进行损失的归一化
+    #-------------------------------------------------------------------------#
+    num_pos = pos_inds.float().sum()
+    pos_loss = pos_loss.sum()
+    neg_loss = neg_loss.sum()
+    if num_pos == 0:
+        loss = -neg_loss
+    else:
+        loss = -(pos_loss + neg_loss) / num_pos
+    return loss
+
 def fit_one_epoch(model_train, model, ema, yolo_loss, loss_history, eval_callback, optimizer, epoch, epoch_step, epoch_step_val, gen, gen_val, Epoch, cuda, fp16, scaler, save_period, save_dir, local_rank=0):
     loss        = 0
     val_loss    = 0
+    cls_loss = 0
+    loc_loss = 0#补入两预测损失
 
     if local_rank == 0:
         # print('Start Train')
@@ -17,11 +55,14 @@ def fit_one_epoch(model_train, model, ema, yolo_loss, loss_history, eval_callbac
         if iteration >= epoch_step:
             break
 
-        images, bboxes = batch
+        images, bboxes, hms, whs, masks = batch
         with torch.no_grad():
             if cuda:
                 images = images.cuda(local_rank)
                 bboxes = bboxes.cuda(local_rank)
+                hms = hms.cuda(local_rank)
+                whs = whs.cuda(local_rank)
+                masks = masks.cuda(local_rank)
         #----------------------#
         #   清零梯度
         #----------------------#
@@ -46,7 +87,10 @@ def fit_one_epoch(model_train, model, ema, yolo_loss, loss_history, eval_callbac
                 #   前向传播
                 #----------------------#
                 outputs         = model_train(images)
-                loss_value = yolo_loss(outputs, bboxes)
+                loss_main = yolo_loss(outputs[:7], bboxes)
+                loss_cls = focal_loss(outputs[-2], hms)
+                loss_loc = reg_l1_loss(outputs[-1], whs, masks)*0.1
+                loss_value = loss_main+loss_cls+loss_loc#替原y_loss(outputs,bboxes)
 
             #----------------------#
             #   反向传播
@@ -60,10 +104,11 @@ def fit_one_epoch(model_train, model, ema, yolo_loss, loss_history, eval_callbac
             ema.update(model_train)
 
         loss += loss_value.item()
+        cls_loss += loss_cls.item()
+        loc_loss += loss_loc.item()
         
         if local_rank == 0:
-            pbar.set_postfix(**{'loss'  : loss / (iteration + 1), 
-                                'lr'    : get_lr(optimizer)})
+            pbar.set_postfix(**{'loss':loss/(iteration+1),'中':cls_loss/(iteration+1),'尺':loc_loss/(iteration+1),'lr':get_lr(optimizer)})
             pbar.update(1)
 
     if local_rank == 0:
@@ -92,7 +137,7 @@ def fit_one_epoch(model_train, model, ema, yolo_loss, loss_history, eval_callbac
             #----------------------#
             #   前向传播
             #----------------------#
-            outputs     = model_train_eval(images)
+            outputs     = model_train_eval(images)[:7]
             loss_value  = yolo_loss(outputs, bboxes)
 
         val_loss += loss_value.item()
