@@ -81,7 +81,8 @@ if __name__ == "__main__": #精简参数行，去除多余注释
     save_dir            = 'logs'
     eval_flag           = True
     eval_period         = 10
-    num_workers         = 4```
+    num_workers         = 4
+```
 预处理改进
 ```
 #跑训练前先执行annotation.py生成本地数据集，改动涉及：
@@ -354,4 +355,5 @@ def gaussian2D(shape, sigma=1):
     y, x = np.ogrid[-m:m + 1, -n:n + 1]
     h = np.exp(-(x * x + y * y) / (2 * sigma * sigma))
     h[h < np.finfo(h.dtype).eps * h.max()] = 0
-    return h```
+    return h
+```
